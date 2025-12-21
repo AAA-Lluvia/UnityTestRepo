@@ -4,16 +4,27 @@ public class LightController : MonoBehaviour
 {
     public Light targetLight;
 
-    public float moveStep = 0.3f;    // 平移步长
-    public float heightStep = 0.2f;  // 上下步长
-    public float rotateStep = 10f;   // 旋转角度（度）
+    public float moveStep = 0.3f;
+    public float heightStep = 0.2f;
+    public float rotateStep = 10f;
 
-    // 根据右手的 move / rotation 更新光源
+    private Vector3 initialPos;
+    private Quaternion initialRot;
+
+    void Start()
+    {
+        if (targetLight != null)
+        {
+            initialPos = targetLight.transform.position;
+            initialRot = targetLight.transform.rotation;
+        }
+    }
+
     public void UpdateLightFromStatus(OneHandStatus status)
     {
         if (targetLight == null || status == null) return;
 
-        // 位移
+        // 位移：根据 move
         Vector3 pos = targetLight.transform.position;
         switch (status.move)
         {
@@ -32,7 +43,7 @@ public class LightController : MonoBehaviour
         }
         targetLight.transform.position = pos;
 
-        // 旋转（绕 Y 轴）
+        // 旋转：根据 rotation
         if (status.rotation == "CW")
         {
             targetLight.transform.Rotate(Vector3.up, rotateStep, Space.World);
@@ -41,5 +52,13 @@ public class LightController : MonoBehaviour
         {
             targetLight.transform.Rotate(Vector3.up, -rotateStep, Space.World);
         }
+    }
+
+    public void ResetLight()
+    {
+        if (targetLight == null) return;
+        targetLight.transform.position = initialPos;
+        targetLight.transform.rotation = initialRot;
+        Debug.Log("光源已重置");
     }
 }

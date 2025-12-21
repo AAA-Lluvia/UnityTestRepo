@@ -5,22 +5,22 @@ using System.Text;
 using UnityEngine;
 
 /// <summary>
-/// 对应 JSON 中 Left / Right 每只手的数据
+/// 对应 Python JSON 中每只手的数据
 /// </summary>
 [Serializable]
 public class OneHandStatus
 {
     public string move;       // "Up" / "Down" / "Left" / "Right" / "Still"
-    public string gesture;    // "OpenPalm" / "Pinch" / "Fist" / "None"
+    public string gesture;    // "Fist" / "Pinch" / "OpenPalm" / "Other" / "None"
     public string rotation;   // "CCW" / "CW" / "Still"
-    public float cie_x;       // 可能是 0 或未设置
+    public float cie_x;
     public float cie_y;
     public int[] rgb;         // [r,g,b] 0-255
-    public bool lockColor;    // 由 JSON 中的 "lock" 映射而来
+    public bool locked;       // 由 JSON 的 "lock" 映射而来
 }
 
 /// <summary>
-/// 整个 hand_status：有 Left / Right 两只手
+/// 整个 JSON：{"Left": {...}, "Right": {...}}
 /// </summary>
 [Serializable]
 public class HandStatusMessage
@@ -37,7 +37,7 @@ public class UdpHandReceiver : MonoBehaviour
     private UdpClient udpClient;
     private IPEndPoint remoteEndPoint;
 
-    [Header("最新收到的 HandStatus")]
+    [Header("最新收到的状态")]
     public HandStatusMessage latestStatus = new HandStatusMessage();
 
     void Start()
@@ -70,11 +70,10 @@ public class UdpHandReceiver : MonoBehaviour
             }
             else
             {
-                // 把 Python 的 "lock" 映射成 C# 里的 "lockColor"
-                json = json.Replace("\"lock\":", "\"lockColor\":");
+                // Python 中字段叫 "lock"，C# 中字段是 locked
+                json = json.Replace("\"lock\":", "\"locked\":");
 
                 HandStatusMessage msg = JsonUtility.FromJson<HandStatusMessage>(json);
-
                 if (msg == null)
                 {
                     Debug.LogWarning("JsonUtility.FromJson 返回 null，JSON = " + json);
@@ -95,20 +94,6 @@ public class UdpHandReceiver : MonoBehaviour
         {
             if (udpClient != null)
                 udpClient.BeginReceive(ReceiveCallback, null);
-        }
-    }
-
-    void Update()
-    {
-        // 简单打印一下，确认数据在更新（可以之后关掉）
-        if (latestStatus != null && latestStatus.Left != null)
-        {
-            Debug.Log(
-                $"[Left] gesture={latestStatus.Left.gesture}, " +
-                $"move={latestStatus.Left.move}, " +
-                $"CIE=({latestStatus.Left.cie_x:F3},{latestStatus.Left.cie_y:F3}), " +
-                $"RGB=({(latestStatus.Left.rgb != null && latestStatus.Left.rgb.Length >= 3 ? $"{latestStatus.Left.rgb[0]},{latestStatus.Left.rgb[1]},{latestStatus.Left.rgb[2]}" : "null")})"
-            );
         }
     }
 
