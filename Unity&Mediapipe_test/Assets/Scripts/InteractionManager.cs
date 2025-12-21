@@ -9,6 +9,13 @@ public enum InteractionState
     Done
 }
 
+public enum StepLockPhase
+{
+    Preview,    // 预览：OpenPalm/Other 可以修改属性
+    PreLocked,  // 第一次 Pinch 预锁定，可用 Fist 取消
+    FinalLocked // Python 的 lock=true 出现后，我们标记最终锁定并进入下一步
+}
+
 public class InteractionManager : MonoBehaviour
 {
     [Header("输入源")]
@@ -27,9 +34,13 @@ public class InteractionManager : MonoBehaviour
     public float shapeStep = 0.1f;
     public float roughnessStep = 0.05f;
 
-    // 上一帧锁定状态（用于检测“刚刚锁定”）
-    private bool prevLeftLocked = false;
-    private bool prevRightLocked = false;
+    // 每只手自己的阶段（用于 4 层复用）
+    private StepLockPhase leftPhase = StepLockPhase.Preview;
+    private StepLockPhase rightPhase = StepLockPhase.Preview;
+
+    // 记录上一帧 Python 的 lock 状态（用于检测 rising edge）
+    private bool prevLeftLockedPython = false;
+    private bool prevRightLockedPython = false;
 
     void Update()
     {
@@ -39,53 +50,76 @@ public class InteractionManager : MonoBehaviour
         OneHandStatus left = handReceiver.latestStatus.Left;
         OneHandStatus right = handReceiver.latestStatus.Right;
 
+        bool leftLockedNow = left != null && left.locked;
+        bool rightLockedNow = right != null && right.locked;
+
+        bool leftJustLocked = !prevLeftLockedPython && leftLockedNow;
+        bool rightJustLocked = !prevRightLockedPython && rightLockedNow;
+
         switch (currentState)
         {
             case InteractionState.ShapeSelection:
-                HandleShapeSelection(left);
+                HandleShapeSelection(left, leftJustLocked);
                 break;
             case InteractionState.ColorSelection:
-                HandleColorSelection(right);
+                HandleColorSelection(right, rightJustLocked);
                 break;
             case InteractionState.MaterialRoughness:
-                HandleMaterial(left);
+                HandleMaterial(left, leftJustLocked);
                 break;
             case InteractionState.LightControl:
-                HandleLight(right);
+                HandleLight(right, rightJustLocked);
                 break;
             case InteractionState.Done:
-                // 暂时什么也不做
+                // 暂时不做事，可以以后加“重新开始”逻辑
                 break;
         }
 
-        // 更新上一帧锁定标记
-        prevLeftLocked = (left != null && left.locked);
-        prevRightLocked = (right != null && right.locked);
+        // 更新上一帧 lock 状态
+        prevLeftLockedPython = leftLockedNow;
+        prevRightLockedPython = rightLockedNow;
     }
 
     // ===========================
     // Step1: 模型选择 + 形状（左手）
-    // 预览：OpenPalm + move
-    // 连捏3次（locked=true）→ 进入颜色选择
-    // Fist → 重置模型形状
     // ===========================
-    void HandleShapeSelection(OneHandStatus left)
+    void HandleShapeSelection(OneHandStatus left, bool leftJustLocked)
     {
         if (left == null) return;
 
-        // 拳头取消：重置当前模型形状
-        if (left.gesture == "Fist")
+        // 1) 在预锁定阶段，可用 Fist 取消
+        if (leftPhase == StepLockPhase.PreLocked && left.gesture == "Fist")
         {
             if (modelManager != null)
                 modelManager.ResetShape();
+
+            leftPhase = StepLockPhase.Preview;
+            Debug.Log("【模型】预锁定被 Fist 取消，回到预览阶段");
             return;
         }
 
-        bool lockedNow = left.locked;
-        bool justLocked = !prevLeftLocked && lockedNow;
+        // 2) 预锁定阶段 + Python lock 变为 true → 最终锁定，进入下一层
+        if (leftPhase == StepLockPhase.PreLocked && leftJustLocked)
+        {
+            leftPhase = StepLockPhase.FinalLocked;
+            currentState = InteractionState.ColorSelection;
 
-        // 预览（未锁定）
-        if (!lockedNow && modelManager != null)
+            // 为下一层右手准备
+            rightPhase = StepLockPhase.Preview;
+            Debug.Log("【模型】最终锁定，进入颜色选择（右手）");
+            return;
+        }
+
+        // 3) 预览阶段中，第一次 Pinch = 预锁定
+        if (leftPhase == StepLockPhase.Preview && left.gesture == "Pinch")
+        {
+            leftPhase = StepLockPhase.PreLocked;
+            Debug.Log("【模型】第一次 Pinch → 预锁定（等待后续 Pinch 或 Fist 取消）");
+            return;
+        }
+
+        // 4) 预览阶段：OpenPalm/Other + move 控制模型和形状
+        if (leftPhase == StepLockPhase.Preview && modelManager != null)
         {
             if (left.gesture == "OpenPalm" || left.gesture == "Other")
             {
@@ -99,76 +133,94 @@ public class InteractionManager : MonoBehaviour
                     modelManager.AdjustShape(-shapeStep);
             }
         }
-
-        // 刚刚锁定 → 进入颜色选择
-        if (justLocked)
-        {
-            currentState = InteractionState.ColorSelection;
-            Debug.Log("模型已锁定，进入颜色选择（右手）");
-        }
     }
 
     // ===========================
-    // Step1: 颜色选择（右手）
-    // 预览：OpenPalm/Other → 实时用 RGB 改颜色
-    // 连捏3次锁定 → 进入材质
-    // Fist → 重置当前模型颜色
+    // Step1: 颜色（右手）
     // ===========================
-    void HandleColorSelection(OneHandStatus right)
+    void HandleColorSelection(OneHandStatus right, bool rightJustLocked)
     {
         if (right == null) return;
 
-        // 拳头取消：重置颜色
-        if (right.gesture == "Fist")
+        // 1) 预锁定阶段，可用 Fist 取消颜色
+        if (rightPhase == StepLockPhase.PreLocked && right.gesture == "Fist")
         {
             if (colorController != null)
                 colorController.ResetColor();
+
+            rightPhase = StepLockPhase.Preview;
+            Debug.Log("【颜色】预锁定被 Fist 取消，回到预览阶段");
             return;
         }
 
-        bool lockedNow = right.locked;
-        bool justLocked = !prevRightLocked && lockedNow;
+        // 2) 预锁定阶段 + Python lock=true → 最终锁定，进入材质
+        if (rightPhase == StepLockPhase.PreLocked && rightJustLocked)
+        {
+            rightPhase = StepLockPhase.FinalLocked;
+            currentState = InteractionState.MaterialRoughness;
 
-        // 预览（未锁定）
-        if (!lockedNow && colorController != null)
+            leftPhase = StepLockPhase.Preview;
+            Debug.Log("【颜色】最终锁定，进入材质粗糙度（左手）");
+            return;
+        }
+
+        // 3) 预览阶段：第一次 Pinch = 预锁定
+        if (rightPhase == StepLockPhase.Preview && right.gesture == "Pinch")
+        {
+            rightPhase = StepLockPhase.PreLocked;
+            Debug.Log("【颜色】第一次 Pinch → 预锁定");
+            return;
+        }
+
+        // 4) 预览阶段：OpenPalm/Other 用 rgb 实时预览颜色
+        if (rightPhase == StepLockPhase.Preview && colorController != null)
         {
             if (right.gesture == "OpenPalm" || right.gesture == "Other")
             {
                 colorController.UpdateColorFromRgbArray(right.rgb);
             }
         }
-
-        // 刚刚锁定 → 进入材质粗糙度控制
-        if (justLocked)
-        {
-            currentState = InteractionState.MaterialRoughness;
-            Debug.Log("颜色已锁定，进入材质粗糙度控制（左手）");
-        }
     }
 
     // ===========================
     // Step2: 材质粗糙度（左手）
-    // 预览：OpenPalm + move Left/Right
-    // 连捏3次锁定 → 进入光源控制
-    // Fist → 重置粗糙度
     // ===========================
-    void HandleMaterial(OneHandStatus left)
+    void HandleMaterial(OneHandStatus left, bool leftJustLocked)
     {
         if (left == null) return;
 
-        // 拳头取消：重置粗糙度
-        if (left.gesture == "Fist")
+        // 1) 预锁定阶段 Fist → 取消粗糙度修改
+        if (leftPhase == StepLockPhase.PreLocked && left.gesture == "Fist")
         {
             if (materialController != null)
                 materialController.ResetRoughness();
+
+            leftPhase = StepLockPhase.Preview;
+            Debug.Log("【材质】预锁定被 Fist 取消，回到预览阶段");
             return;
         }
 
-        bool lockedNow = left.locked;
-        bool justLocked = !prevLeftLocked && lockedNow;
+        // 2) 预锁定阶段 + lock=true → 最终锁定，进入光源
+        if (leftPhase == StepLockPhase.PreLocked && leftJustLocked)
+        {
+            leftPhase = StepLockPhase.FinalLocked;
+            currentState = InteractionState.LightControl;
 
-        // 预览（未锁定）
-        if (!lockedNow && materialController != null)
+            rightPhase = StepLockPhase.Preview;
+            Debug.Log("【材质】最终锁定，进入光源控制（右手）");
+            return;
+        }
+
+        // 3) 预览阶段：第一次 Pinch = 预锁定
+        if (leftPhase == StepLockPhase.Preview && left.gesture == "Pinch")
+        {
+            leftPhase = StepLockPhase.PreLocked;
+            Debug.Log("【材质】第一次 Pinch → 预锁定");
+            return;
+        }
+
+        // 4) 预览阶段：OpenPalm/Other 左右滑改粗糙度
+        if (leftPhase == StepLockPhase.Preview && materialController != null)
         {
             if (left.gesture == "OpenPalm" || left.gesture == "Other")
             {
@@ -178,50 +230,50 @@ public class InteractionManager : MonoBehaviour
                     materialController.AdjustRoughness(-roughnessStep);
             }
         }
-
-        // 刚刚锁定 → 进入光源控制
-        if (justLocked)
-        {
-            currentState = InteractionState.LightControl;
-            Debug.Log("材质粗糙度已锁定，进入光源控制（右手）");
-        }
     }
 
     // ===========================
     // Step2: 光源控制（右手）
-    // 预览：OpenPalm/Other → 移动 + 旋转光源
-    // 连捏3次锁定 → Done
-    // Fist → 重置光源
     // ===========================
-    void HandleLight(OneHandStatus right)
+    void HandleLight(OneHandStatus right, bool rightJustLocked)
     {
         if (right == null) return;
 
-        // 拳头取消：重置光源
-        if (right.gesture == "Fist")
+        // 1) 预锁定阶段 Fist → 取消光源修改，重置光源
+        if (rightPhase == StepLockPhase.PreLocked && right.gesture == "Fist")
         {
             if (lightController != null)
                 lightController.ResetLight();
+
+            rightPhase = StepLockPhase.Preview;
+            Debug.Log("【光源】预锁定被 Fist 取消，回到预览阶段");
             return;
         }
 
-        bool lockedNow = right.locked;
-        bool justLocked = !prevRightLocked && lockedNow;
+        // 2) 预锁定阶段 + lock=true → 最终锁定，整个流程完成
+        if (rightPhase == StepLockPhase.PreLocked && rightJustLocked)
+        {
+            rightPhase = StepLockPhase.FinalLocked;
+            currentState = InteractionState.Done;
+            Debug.Log("【光源】最终锁定，全部流程完成 ✅");
+            return;
+        }
 
-        // 预览（未锁定）
-        if (!lockedNow && lightController != null)
+        // 3) 预览阶段：第一次 Pinch = 预锁定
+        if (rightPhase == StepLockPhase.Preview && right.gesture == "Pinch")
+        {
+            rightPhase = StepLockPhase.PreLocked;
+            Debug.Log("【光源】第一次 Pinch → 预锁定");
+            return;
+        }
+
+        // 4) 预览阶段：OpenPalm/Other 实时移动 + 旋转光源
+        if (rightPhase == StepLockPhase.Preview && lightController != null)
         {
             if (right.gesture == "OpenPalm" || right.gesture == "Other")
             {
                 lightController.UpdateLightFromStatus(right);
             }
-        }
-
-        // 刚刚锁定 → 整体流程完成
-        if (justLocked)
-        {
-            currentState = InteractionState.Done;
-            Debug.Log("光源已锁定，全部流程完成 ✅");
         }
     }
 }

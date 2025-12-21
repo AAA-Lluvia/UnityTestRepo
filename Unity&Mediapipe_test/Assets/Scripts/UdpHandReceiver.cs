@@ -15,8 +15,8 @@ public class OneHandStatus
     public string rotation;   // "CCW" / "CW" / "Still"
     public float cie_x;
     public float cie_y;
-    public int[] rgb;         // [r,g,b] 0-255
-    public bool locked;       // 由 JSON 的 "lock" 映射而来
+    public int[] rgb;         // [r,g,b]
+    public bool locked;       // 来自 JSON 的 "lock"
 }
 
 /// <summary>
@@ -70,7 +70,7 @@ public class UdpHandReceiver : MonoBehaviour
             }
             else
             {
-                // Python 中字段叫 "lock"，C# 中字段是 locked
+                // Python 字段是 "lock"，C# 中是 "locked"
                 json = json.Replace("\"lock\":", "\"locked\":");
 
                 HandStatusMessage msg = JsonUtility.FromJson<HandStatusMessage>(json);

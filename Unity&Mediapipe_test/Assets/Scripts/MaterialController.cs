@@ -5,7 +5,7 @@ public class MaterialController : MonoBehaviour
     public ModelManager modelManager;
 
     [Range(0f, 1f)]
-    public float roughness = 0.5f;   // 0=光滑,1=粗糙
+    public float roughness = 0.5f;   // 0=光滑, 1=粗糙
     public float defaultRoughness = 0.5f;
 
     public void AdjustRoughness(float delta)

@@ -81,7 +81,7 @@ public class ModelManager : MonoBehaviour
         if (current == null) return;
 
         Vector3 baseScale = originalScales[currentIndex];
-        float factor = 1f + shapeValue; // 在 [0,2] 之间
+        float factor = 1f + shapeValue; // [0,2]
         current.transform.localScale = new Vector3(
             baseScale.x * factor,
             baseScale.y,

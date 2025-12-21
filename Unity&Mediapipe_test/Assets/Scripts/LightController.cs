@@ -24,7 +24,7 @@ public class LightController : MonoBehaviour
     {
         if (targetLight == null || status == null) return;
 
-        // 位移：根据 move
+        // 位移
         Vector3 pos = targetLight.transform.position;
         switch (status.move)
         {
@@ -43,7 +43,7 @@ public class LightController : MonoBehaviour
         }
         targetLight.transform.position = pos;
 
-        // 旋转：根据 rotation
+        // 旋转
         if (status.rotation == "CW")
         {
             targetLight.transform.Rotate(Vector3.up, rotateStep, Space.World);
