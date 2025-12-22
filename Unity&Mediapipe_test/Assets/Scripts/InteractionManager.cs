@@ -13,7 +13,7 @@ public enum StepLockPhase
 {
     Preview,    // 预览：OpenPalm/Other 可以修改属性
     PreLocked,  // 第一次 Pinch 预锁定，可用 Fist 取消
-    FinalLocked // Python 的 lock=true 出现后，我们标记最终锁定并进入下一步
+    FinalLocked // Python lock=true 后，我们视为最终锁定并进入下一步
 }
 
 public class InteractionManager : MonoBehaviour
@@ -30,9 +30,20 @@ public class InteractionManager : MonoBehaviour
     [Header("当前交互状态")]
     public InteractionState currentState = InteractionState.ShapeSelection;
 
-    [Header("调节步长")]
-    public float shapeStep = 0.1f;
-    public float roughnessStep = 0.05f;
+    [Header("模型切换减敏参数")]
+    [Tooltip("两次模型切换之间的最小间隔时间（秒）")]
+    public float modelSwitchCooldown = 0.35f;
+
+    [Header("模型横向拉伸灵敏度")]
+    [Tooltip("模型横向拉伸速度（shapeValue 每秒变化量）")]
+    public float shapeAdjustSpeed = 0.5f; // 越小越稳，越大越灵敏
+
+    [Header("材质粗糙度灵敏度")]
+    [Tooltip("粗糙度每秒变化量（0~1）")]
+    public float roughnessAdjustSpeed = 0.3f; // 建议 0.2~0.5 之间调试
+
+    private string prevLeftMove = "Still";
+    private float lastModelSwitchTime = -999f;
 
     // 每只手自己的阶段（用于 4 层复用）
     private StepLockPhase leftPhase = StepLockPhase.Preview;
@@ -78,6 +89,12 @@ public class InteractionManager : MonoBehaviour
         // 更新上一帧 lock 状态
         prevLeftLockedPython = leftLockedNow;
         prevRightLockedPython = rightLockedNow;
+
+        // 更新上一帧的 left.move，用于“边沿触发”切模型
+        if (left != null)
+            prevLeftMove = left.move;
+        else
+            prevLeftMove = "Still";
     }
 
     // ===========================
@@ -87,7 +104,7 @@ public class InteractionManager : MonoBehaviour
     {
         if (left == null) return;
 
-        // 1) 在预锁定阶段，可用 Fist 取消
+        // 1) 预锁定阶段，可用 Fist 取消
         if (leftPhase == StepLockPhase.PreLocked && left.gesture == "Fist")
         {
             if (modelManager != null)
@@ -98,13 +115,12 @@ public class InteractionManager : MonoBehaviour
             return;
         }
 
-        // 2) 预锁定阶段 + Python lock 变为 true → 最终锁定，进入下一层
+        // 2) 预锁定阶段 + Python lock=true → 最终锁定，进入颜色选择
         if (leftPhase == StepLockPhase.PreLocked && leftJustLocked)
         {
             leftPhase = StepLockPhase.FinalLocked;
             currentState = InteractionState.ColorSelection;
 
-            // 为下一层右手准备
             rightPhase = StepLockPhase.Preview;
             Debug.Log("【模型】最终锁定，进入颜色选择（右手）");
             return;
@@ -123,16 +139,48 @@ public class InteractionManager : MonoBehaviour
         {
             if (left.gesture == "OpenPalm" || left.gesture == "Other")
             {
-                if (left.move == "Up")
-                    modelManager.NextModel();
-                else if (left.move == "Down")
-                    modelManager.PreviousModel();
-                else if (left.move == "Right")
-                    modelManager.AdjustShape(shapeStep);
-                else if (left.move == "Left")
-                    modelManager.AdjustShape(-shapeStep);
+                // 4.1 模型切换（带边沿 + 冷却）
+                TrySwitchModel(left);
+
+                // 4.2 模型横向拉伸（平滑、基于时间）
+                float dir = 0f;
+                if (left.move == "Right") dir = 1f;
+                else if (left.move == "Left") dir = -1f;
+
+                if (Mathf.Abs(dir) > 0f)
+                {
+                    float delta = dir * shapeAdjustSpeed * Time.deltaTime;
+                    modelManager.AdjustShape(delta);
+                }
             }
         }
+    }
+
+    /// <summary>
+    /// 减敏后的模型切换逻辑：
+    ///  - 只响应 move == Up / Down
+    ///  - 上一帧不是同一个方向（边沿触发）
+    ///  - 距离上次切换至少 modelSwitchCooldown 秒
+    /// </summary>
+    void TrySwitchModel(OneHandStatus left)
+    {
+        if (left == null || modelManager == null) return;
+
+        if (left.move != "Up" && left.move != "Down")
+            return;
+
+        if (prevLeftMove == left.move)
+            return;
+
+        if (Time.time - lastModelSwitchTime < modelSwitchCooldown)
+            return;
+
+        if (left.move == "Up")
+            modelManager.NextModel();
+        else if (left.move == "Down")
+            modelManager.PreviousModel();
+
+        lastModelSwitchTime = Time.time;
     }
 
     // ===========================
@@ -142,7 +190,6 @@ public class InteractionManager : MonoBehaviour
     {
         if (right == null) return;
 
-        // 1) 预锁定阶段，可用 Fist 取消颜色
         if (rightPhase == StepLockPhase.PreLocked && right.gesture == "Fist")
         {
             if (colorController != null)
@@ -153,7 +200,6 @@ public class InteractionManager : MonoBehaviour
             return;
         }
 
-        // 2) 预锁定阶段 + Python lock=true → 最终锁定，进入材质
         if (rightPhase == StepLockPhase.PreLocked && rightJustLocked)
         {
             rightPhase = StepLockPhase.FinalLocked;
@@ -164,7 +210,6 @@ public class InteractionManager : MonoBehaviour
             return;
         }
 
-        // 3) 预览阶段：第一次 Pinch = 预锁定
         if (rightPhase == StepLockPhase.Preview && right.gesture == "Pinch")
         {
             rightPhase = StepLockPhase.PreLocked;
@@ -172,7 +217,6 @@ public class InteractionManager : MonoBehaviour
             return;
         }
 
-        // 4) 预览阶段：OpenPalm/Other 用 rgb 实时预览颜色
         if (rightPhase == StepLockPhase.Preview && colorController != null)
         {
             if (right.gesture == "OpenPalm" || right.gesture == "Other")
@@ -189,7 +233,6 @@ public class InteractionManager : MonoBehaviour
     {
         if (left == null) return;
 
-        // 1) 预锁定阶段 Fist → 取消粗糙度修改
         if (leftPhase == StepLockPhase.PreLocked && left.gesture == "Fist")
         {
             if (materialController != null)
@@ -200,7 +243,6 @@ public class InteractionManager : MonoBehaviour
             return;
         }
 
-        // 2) 预锁定阶段 + lock=true → 最终锁定，进入光源
         if (leftPhase == StepLockPhase.PreLocked && leftJustLocked)
         {
             leftPhase = StepLockPhase.FinalLocked;
@@ -211,7 +253,6 @@ public class InteractionManager : MonoBehaviour
             return;
         }
 
-        // 3) 预览阶段：第一次 Pinch = 预锁定
         if (leftPhase == StepLockPhase.Preview && left.gesture == "Pinch")
         {
             leftPhase = StepLockPhase.PreLocked;
@@ -219,15 +260,20 @@ public class InteractionManager : MonoBehaviour
             return;
         }
 
-        // 4) 预览阶段：OpenPalm/Other 左右滑改粗糙度
+        // ⭐ 这里是新的“粗糙度平滑调整”逻辑
         if (leftPhase == StepLockPhase.Preview && materialController != null)
         {
             if (left.gesture == "OpenPalm" || left.gesture == "Other")
             {
-                if (left.move == "Right")
-                    materialController.AdjustRoughness(roughnessStep);
-                else if (left.move == "Left")
-                    materialController.AdjustRoughness(-roughnessStep);
+                float dir = 0f;
+                if (left.move == "Right") dir = 1f;
+                else if (left.move == "Left") dir = -1f;
+
+                if (Mathf.Abs(dir) > 0f)
+                {
+                    float delta = dir * roughnessAdjustSpeed * Time.deltaTime;
+                    materialController.AdjustRoughness(delta);
+                }
             }
         }
     }
@@ -239,7 +285,6 @@ public class InteractionManager : MonoBehaviour
     {
         if (right == null) return;
 
-        // 1) 预锁定阶段 Fist → 取消光源修改，重置光源
         if (rightPhase == StepLockPhase.PreLocked && right.gesture == "Fist")
         {
             if (lightController != null)
@@ -250,7 +295,6 @@ public class InteractionManager : MonoBehaviour
             return;
         }
 
-        // 2) 预锁定阶段 + lock=true → 最终锁定，整个流程完成
         if (rightPhase == StepLockPhase.PreLocked && rightJustLocked)
         {
             rightPhase = StepLockPhase.FinalLocked;
@@ -259,7 +303,6 @@ public class InteractionManager : MonoBehaviour
             return;
         }
 
-        // 3) 预览阶段：第一次 Pinch = 预锁定
         if (rightPhase == StepLockPhase.Preview && right.gesture == "Pinch")
         {
             rightPhase = StepLockPhase.PreLocked;
@@ -267,7 +310,6 @@ public class InteractionManager : MonoBehaviour
             return;
         }
 
-        // 4) 预览阶段：OpenPalm/Other 实时移动 + 旋转光源
         if (rightPhase == StepLockPhase.Preview && lightController != null)
         {
             if (right.gesture == "OpenPalm" || right.gesture == "Other")
